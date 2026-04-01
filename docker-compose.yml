@@ -1,0 +1,8 @@
+services:
+  eightsleep-pager:
+    build: .
+    container_name: eightsleep-pager
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8090:8080"
+    env_file: .env
