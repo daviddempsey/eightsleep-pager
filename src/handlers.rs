@@ -41,7 +41,11 @@ pub async fn webhook(
     let computed = hex::encode(mac.finalize().into_bytes());
 
     if !constant_time_eq(computed.as_bytes(), expected_hex.as_bytes()) {
-        tracing::warn!("HMAC signature mismatch");
+        tracing::warn!(
+            computed = %computed,
+            expected = %expected_hex,
+            "HMAC signature mismatch"
+        );
         return StatusCode::UNAUTHORIZED;
     }
 
