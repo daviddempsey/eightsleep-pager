@@ -20,7 +20,8 @@ pub struct WebhookPayload {
 #[derive(Debug, Deserialize)]
 pub struct WebhookEvent {
     pub event_type: String,
-    pub data: IncidentData,
+    #[serde(default)]
+    pub data: serde_json::Value,
 }
 
 #[derive(Debug, Deserialize)]
@@ -28,8 +29,6 @@ pub struct IncidentData {
     pub id: String,
     pub title: String,
     pub urgency: String,
-    pub status: String,
-    pub html_url: String,
 }
 
 // --- REST API response types ---

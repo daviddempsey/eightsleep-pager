@@ -7,7 +7,7 @@ use axum::response::IntoResponse;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 
-use crate::pagerduty::WebhookPayload;
+use crate::pagerduty::{IncidentData, WebhookPayload};
 use crate::AppState;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -68,7 +68,14 @@ pub async fn webhook(
         return StatusCode::OK;
     }
 
-    let incident = &payload.event.data;
+    let incident: IncidentData = match serde_json::from_value(payload.event.data) {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to parse incident data");
+            return StatusCode::BAD_REQUEST;
+        }
+    };
+
     tracing::info!(
         incident_id = %incident.id,
         title = %incident.title,
