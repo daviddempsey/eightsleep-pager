@@ -1,5 +1,5 @@
 use anyhow::{Context, bail};
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Datelike, Duration, Timelike, Utc};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
@@ -205,14 +205,61 @@ impl EightSleepClient {
         Ok(depth)
     }
 
-    pub async fn trigger_vibration(&self, _power: u8) -> anyhow::Result<()> {
+    pub async fn trigger_vibration(&self, power: u8) -> anyhow::Result<()> {
         let (token, user_id) = self.ensure_token().await?;
+
+        // Create an alarm set to fire immediately (1 minute from now)
+        // with vibration enabled at the requested power level.
+        let now = Utc::now() + Duration::minutes(1);
+        let time = format!("{:02}:{:02}:00", now.hour(), now.minute());
+        let weekday = match now.weekday() {
+            chrono::Weekday::Mon => "monday",
+            chrono::Weekday::Tue => "tuesday",
+            chrono::Weekday::Wed => "wednesday",
+            chrono::Weekday::Thu => "thursday",
+            chrono::Weekday::Fri => "friday",
+            chrono::Weekday::Sat => "saturday",
+            chrono::Weekday::Sun => "sunday",
+        };
+
+        let mut week_days = serde_json::Map::new();
+        for day in [
+            "monday",
+            "tuesday",
+            "wednesday",
+            "thursday",
+            "friday",
+            "saturday",
+            "sunday",
+        ] {
+            week_days.insert(day.to_string(), serde_json::Value::Bool(day == weekday));
+        }
 
         let resp = self
             .http
-            .post(format!("{CLIENT_API}/users/{user_id}/vibration-test"))
+            .post(format!("{APP_API}/users/{user_id}/alarms"))
             .bearer_auth(&token)
-            .json(&serde_json::json!({}))
+            .json(&serde_json::json!({
+                "enabled": true,
+                "time": time,
+                "repeat": {
+                    "enabled": false,
+                    "weekDays": week_days,
+                },
+                "vibration": {
+                    "enabled": true,
+                    "powerLevel": power,
+                    "pattern": "RISE",
+                },
+                "thermal": { "enabled": false, "level": 0 },
+                "smart": {
+                    "lightSleepEnabled": false,
+                    "sleepCapEnabled": false,
+                    "sleepCapMinutes": 0,
+                },
+                "audio": { "enabled": false, "trackId": "", "level": 0 },
+                "snoozing": false,
+            }))
             .send()
             .await
             .context("failed to trigger vibration")?;
@@ -223,7 +270,7 @@ impl EightSleepClient {
             bail!("failed to trigger vibration ({}): {}", status, body);
         }
 
-        tracing::info!("eight sleep vibration triggered");
+        tracing::info!(power, "eight sleep vibration alarm created");
         Ok(())
     }
 
