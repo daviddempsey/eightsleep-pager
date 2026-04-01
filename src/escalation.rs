@@ -4,6 +4,8 @@ use std::time::Duration;
 use crate::eight_sleep::SleepDepth;
 use crate::AppState;
 
+const ALARM_CLEANUP_DELAY: Duration = Duration::from_secs(600);
+
 enum WakeAction {
     None,
     Gentle { vibration_power: u8 },
@@ -21,6 +23,16 @@ fn choose_action(depth: SleepDepth, state: &AppState) -> WakeAction {
             temp: state.config.thermal_wake_level,
         },
     }
+}
+
+fn schedule_alarm_cleanup(state: &Arc<AppState>, alarm_id: String) {
+    let state = Arc::clone(state);
+    tokio::spawn(async move {
+        tokio::time::sleep(ALARM_CLEANUP_DELAY).await;
+        if let Err(e) = state.eight_sleep.delete_alarm(&alarm_id).await {
+            tracing::warn!(alarm_id, error = %e, "failed to clean up alarm");
+        }
+    });
 }
 
 pub async fn wake(state: &Arc<AppState>, incident_id: &str) {
@@ -44,8 +56,13 @@ pub async fn wake(state: &Arc<AppState>, incident_id: &str) {
             tracing::info!(incident_id, "user is awake/out of bed, skipping bed wake");
         }
         WakeAction::Gentle { vibration_power } => {
-            if let Err(e) = state.eight_sleep.trigger_vibration(vibration_power, &state.config.timezone).await {
-                tracing::error!(incident_id, error = %e, "gentle vibration failed");
+            match state
+                .eight_sleep
+                .trigger_vibration(vibration_power, &state.config.timezone)
+                .await
+            {
+                Ok(alarm_id) => schedule_alarm_cleanup(state, alarm_id),
+                Err(e) => tracing::error!(incident_id, error = %e, "gentle vibration failed"),
             }
 
             let state = Arc::clone(state);
@@ -62,10 +79,16 @@ pub async fn wake(state: &Arc<AppState>, incident_id: &str) {
                     }
                     _ => {
                         tracing::info!(incident_id, "escalating to full wake");
-                        let _ = state
+                        if let Ok(alarm_id) = state
                             .eight_sleep
-                            .trigger_vibration(state.config.vibration_power, &state.config.timezone)
-                            .await;
+                            .trigger_vibration(
+                                state.config.vibration_power,
+                                &state.config.timezone,
+                            )
+                            .await
+                        {
+                            schedule_alarm_cleanup(&state, alarm_id);
+                        }
                         let _ = state
                             .eight_sleep
                             .set_temperature(state.config.thermal_wake_level)
@@ -78,8 +101,13 @@ pub async fn wake(state: &Arc<AppState>, incident_id: &str) {
             vibration_power,
             temp,
         } => {
-            if let Err(e) = state.eight_sleep.trigger_vibration(vibration_power, &state.config.timezone).await {
-                tracing::error!(incident_id, error = %e, "full vibration failed");
+            match state
+                .eight_sleep
+                .trigger_vibration(vibration_power, &state.config.timezone)
+                .await
+            {
+                Ok(alarm_id) => schedule_alarm_cleanup(state, alarm_id),
+                Err(e) => tracing::error!(incident_id, error = %e, "full vibration failed"),
             }
             if let Err(e) = state.eight_sleep.set_temperature(temp).await {
                 tracing::error!(incident_id, error = %e, "thermal wake failed");

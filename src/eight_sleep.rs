@@ -205,7 +205,7 @@ impl EightSleepClient {
         Ok(depth)
     }
 
-    pub async fn trigger_vibration(&self, power: u8, tz: &str) -> anyhow::Result<()> {
+    pub async fn trigger_vibration(&self, power: u8, tz: &str) -> anyhow::Result<String> {
         let (token, user_id) = self.ensure_token().await?;
 
         // Create an alarm set to fire 1 minute from now in the user's local timezone.
@@ -271,7 +271,36 @@ impl EightSleepClient {
             bail!("failed to trigger vibration ({}): {}", status, body);
         }
 
-        tracing::info!(power, "eight sleep vibration alarm created");
+        let body: serde_json::Value = resp.json().await.unwrap_or_default();
+        let alarm_id = body
+            .pointer("/alarms/0/id")
+            .or_else(|| body.pointer("/id"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        tracing::info!(power, alarm_id, "eight sleep vibration alarm created");
+        Ok(alarm_id)
+    }
+
+    pub async fn delete_alarm(&self, alarm_id: &str) -> anyhow::Result<()> {
+        let (token, user_id) = self.ensure_token().await?;
+
+        let resp = self
+            .http
+            .delete(format!("{APP_API}/users/{user_id}/alarms/{alarm_id}"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .context("failed to delete alarm")?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            bail!("failed to delete alarm ({}): {}", status, body);
+        }
+
+        tracing::info!(alarm_id, "eight sleep alarm deleted");
         Ok(())
     }
 
