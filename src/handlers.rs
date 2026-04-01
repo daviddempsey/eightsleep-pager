@@ -50,10 +50,12 @@ pub async fn webhook(
     }
 
     // Parse webhook payload
+    let body_str = String::from_utf8_lossy(&body);
+    tracing::debug!(body = %body_str, "webhook body received");
     let payload: WebhookPayload = match serde_json::from_slice(&body) {
         Ok(p) => p,
         Err(e) => {
-            tracing::warn!(error = %e, "failed to parse webhook payload");
+            tracing::warn!(error = %e, body = %body_str, "failed to parse webhook payload");
             return StatusCode::BAD_REQUEST;
         }
     };
