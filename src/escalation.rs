@@ -44,7 +44,7 @@ pub async fn wake(state: &Arc<AppState>, incident_id: &str) {
             tracing::info!(incident_id, "user is awake/out of bed, skipping bed wake");
         }
         WakeAction::Gentle { vibration_power } => {
-            if let Err(e) = state.eight_sleep.trigger_vibration(vibration_power).await {
+            if let Err(e) = state.eight_sleep.trigger_vibration(vibration_power, &state.config.timezone).await {
                 tracing::error!(incident_id, error = %e, "gentle vibration failed");
             }
 
@@ -64,7 +64,7 @@ pub async fn wake(state: &Arc<AppState>, incident_id: &str) {
                         tracing::info!(incident_id, "escalating to full wake");
                         let _ = state
                             .eight_sleep
-                            .trigger_vibration(state.config.vibration_power)
+                            .trigger_vibration(state.config.vibration_power, &state.config.timezone)
                             .await;
                         let _ = state
                             .eight_sleep
@@ -78,7 +78,7 @@ pub async fn wake(state: &Arc<AppState>, incident_id: &str) {
             vibration_power,
             temp,
         } => {
-            if let Err(e) = state.eight_sleep.trigger_vibration(vibration_power).await {
+            if let Err(e) = state.eight_sleep.trigger_vibration(vibration_power, &state.config.timezone).await {
                 tracing::error!(incident_id, error = %e, "full vibration failed");
             }
             if let Err(e) = state.eight_sleep.set_temperature(temp).await {

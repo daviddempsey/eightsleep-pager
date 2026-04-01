@@ -205,14 +205,15 @@ impl EightSleepClient {
         Ok(depth)
     }
 
-    pub async fn trigger_vibration(&self, power: u8) -> anyhow::Result<()> {
+    pub async fn trigger_vibration(&self, power: u8, tz: &str) -> anyhow::Result<()> {
         let (token, user_id) = self.ensure_token().await?;
 
-        // Create an alarm set to fire immediately (1 minute from now)
-        // with vibration enabled at the requested power level.
-        let now = Utc::now() + Duration::minutes(1);
-        let time = format!("{:02}:{:02}:00", now.hour(), now.minute());
-        let weekday = match now.weekday() {
+        // Create an alarm set to fire 1 minute from now in the user's local timezone.
+        // The Eight Sleep API interprets alarm times as local time.
+        let tz: chrono_tz::Tz = tz.parse().context("invalid timezone")?;
+        let local_now = Utc::now().with_timezone(&tz) + Duration::minutes(1);
+        let time = format!("{:02}:{:02}:00", local_now.hour(), local_now.minute());
+        let weekday = match local_now.weekday() {
             chrono::Weekday::Mon => "monday",
             chrono::Weekday::Tue => "tuesday",
             chrono::Weekday::Wed => "wednesday",

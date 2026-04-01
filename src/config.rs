@@ -9,6 +9,7 @@ pub struct Config {
     pub gentle_vibration_power: u8,
     pub thermal_wake_level: i8,
     pub escalation_delay_secs: u64,
+    pub timezone: String,
 }
 
 impl Config {
@@ -44,6 +45,8 @@ impl Config {
                 .unwrap_or_else(|_| "30".to_string())
                 .parse()
                 .expect("ESCALATION_DELAY_SECS must be a valid u64"),
+            timezone: std::env::var("TIMEZONE")
+                .unwrap_or_else(|_| "America/New_York".to_string()),
         }
     }
 }
