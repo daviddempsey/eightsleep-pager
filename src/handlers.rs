@@ -70,23 +70,7 @@ pub async fn webhook(
         "incident triggered — waking bed"
     );
 
-    // Trigger vibration alarm
-    match state
-        .eight_sleep
-        .trigger_vibration(state.config.vibration_power)
-        .await
-    {
-        Ok(()) => {
-            tracing::info!(
-                incident_id = %incident.id,
-                power = state.config.vibration_power,
-                "vibration alarm triggered"
-            );
-        }
-        Err(e) => {
-            tracing::error!(error = %e, "failed to trigger vibration alarm");
-        }
-    }
+    crate::escalation::wake(&state, &incident.id).await;
 
     // Always return 200 to prevent PagerDuty from retrying
     StatusCode::OK

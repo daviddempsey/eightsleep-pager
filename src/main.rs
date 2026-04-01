@@ -6,6 +6,7 @@ use tracing_subscriber::EnvFilter;
 
 mod config;
 mod eight_sleep;
+mod escalation;
 mod handlers;
 mod pagerduty;
 

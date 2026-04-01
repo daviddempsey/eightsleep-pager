@@ -6,6 +6,9 @@ pub struct Config {
     pub pagerduty_user_id: String,
     pub pagerduty_webhook_secret: String,
     pub vibration_power: u8,
+    pub gentle_vibration_power: u8,
+    pub thermal_wake_level: i8,
+    pub escalation_delay_secs: u64,
 }
 
 impl Config {
@@ -29,6 +32,18 @@ impl Config {
                 .unwrap_or_else(|_| "80".to_string())
                 .parse()
                 .expect("VIBRATION_POWER must be a valid u8"),
+            gentle_vibration_power: std::env::var("GENTLE_VIBRATION_POWER")
+                .unwrap_or_else(|_| "40".to_string())
+                .parse()
+                .expect("GENTLE_VIBRATION_POWER must be a valid u8"),
+            thermal_wake_level: std::env::var("THERMAL_WAKE_LEVEL")
+                .unwrap_or_else(|_| "50".to_string())
+                .parse()
+                .expect("THERMAL_WAKE_LEVEL must be a valid i8"),
+            escalation_delay_secs: std::env::var("ESCALATION_DELAY_SECS")
+                .unwrap_or_else(|_| "30".to_string())
+                .parse()
+                .expect("ESCALATION_DELAY_SECS must be a valid u64"),
         }
     }
 }
