@@ -77,15 +77,6 @@ impl std::fmt::Display for SleepDepth {
 }
 
 #[derive(Debug, Serialize)]
-struct AlarmRequest {
-    #[serde(rename = "vibrationPattern")]
-    vibration_pattern: String,
-    #[serde(rename = "vibrationLevel")]
-    vibration_level: u8,
-    enabled: bool,
-}
-
-#[derive(Debug, Serialize)]
 struct TemperatureRequest {
     #[serde(rename = "currentLevel")]
     current_level: i8,
@@ -214,18 +205,14 @@ impl EightSleepClient {
         Ok(depth)
     }
 
-    pub async fn trigger_vibration(&self, power: u8) -> anyhow::Result<()> {
+    pub async fn trigger_vibration(&self, _power: u8) -> anyhow::Result<()> {
         let (token, user_id) = self.ensure_token().await?;
 
         let resp = self
             .http
-            .post(format!("{APP_API}/users/{user_id}/alarms"))
+            .post(format!("{CLIENT_API}/users/{user_id}/vibration-test"))
             .bearer_auth(&token)
-            .json(&AlarmRequest {
-                vibration_pattern: "RISE".to_string(),
-                vibration_level: power,
-                enabled: true,
-            })
+            .json(&serde_json::json!({}))
             .send()
             .await
             .context("failed to trigger vibration")?;
@@ -236,7 +223,7 @@ impl EightSleepClient {
             bail!("failed to trigger vibration ({}): {}", status, body);
         }
 
-        tracing::info!(power, "eight sleep vibration alarm triggered");
+        tracing::info!("eight sleep vibration triggered");
         Ok(())
     }
 
