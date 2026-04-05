@@ -38,7 +38,7 @@ impl Config {
                 .parse()
                 .expect("GENTLE_VIBRATION_POWER must be a valid u8"),
             thermal_wake_level: std::env::var("THERMAL_WAKE_LEVEL")
-                .unwrap_or_else(|_| "50".to_string())
+                .unwrap_or_else(|_| "5".to_string())
                 .parse()
                 .expect("THERMAL_WAKE_LEVEL must be a valid i8"),
             escalation_delay_secs: std::env::var("ESCALATION_DELAY_SECS")
