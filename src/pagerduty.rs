@@ -58,11 +58,14 @@ impl PagerDutyClient {
     }
 
     pub async fn is_on_call(&self) -> anyhow::Result<bool> {
+        let url = format!(
+            "{API_BASE}/oncalls?user_ids[]={}&earliest=true",
+            self.user_id
+        );
         let resp = self
             .http
-            .get(format!("{API_BASE}/oncalls"))
+            .get(&url)
             .header("Authorization", format!("Token token={}", self.api_token))
-            .query(&[("user_ids[]", &self.user_id), ("earliest", &"true".to_string())])
             .send()
             .await
             .context("failed to query on-call status")?;
