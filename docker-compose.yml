@@ -1,5 +1,6 @@
 services:
   eightsleep-pager:
+    image: ghcr.io/daviddempsey/eightsleep-pager:latest
     build: .
     container_name: eightsleep-pager
     restart: unless-stopped
