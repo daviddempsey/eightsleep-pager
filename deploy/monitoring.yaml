@@ -1,0 +1,59 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: eightsleep-pager
+  namespace: apps
+spec:
+  selector:
+    matchLabels:
+      app: eightsleep-pager
+  podMetricsEndpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 10s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: eightsleep-pager
+  namespace: monitoring
+spec:
+  groups:
+    - name: eightsleep-pager
+      rules:
+        - alert: EightSleepPagerDependencyFailed
+          expr: min by (dependency) (eightsleep_pager_dependency_healthy{namespace="apps"}) == 0
+          for: 2m
+          labels:
+            severity: critical
+            namespace: apps
+          annotations:
+            summary: "Eight Sleep pager cannot reach {{ $labels.dependency }}"
+            description: "A pager instance cannot authenticate/read the bed, verify PagerDuty on-call status, or receive its signed public webhook probe. Bed wake-ups may fail. Check apps/eightsleep-pager logs and /health."
+        - alert: EightSleepPagerChecksStale
+          expr: time() - min by (dependency) (eightsleep_pager_dependency_checked_at_seconds{namespace="apps"}) > 180
+          for: 1m
+          labels:
+            severity: critical
+            namespace: apps
+          annotations:
+            summary: "Eight Sleep pager health checks have stopped"
+            description: "The {{ $labels.dependency }} check has not completed for over three minutes on a pager instance."
+        - alert: EightSleepPagerUnavailable
+          expr: absent(up{namespace="apps",pod=~"eightsleep-pager-.*"}) or min(up{namespace="apps",pod=~"eightsleep-pager-.*"}) == 0
+          for: 2m
+          labels:
+            severity: critical
+            namespace: apps
+          annotations:
+            summary: "Eight Sleep pager instance is unavailable"
+            description: "Prometheus cannot scrape a pager instance, or no pager instances are discovered. Check the deployment and PodMonitor."
+        - alert: EightSleepPagerWakeFailed
+          expr: (time() - max(eightsleep_pager_last_failure_timestamp_seconds{namespace="apps"}) < 900) and (max(eightsleep_pager_last_failure_timestamp_seconds{namespace="apps"}) > 0)
+          labels:
+            severity: critical
+            namespace: apps
+          annotations:
+            summary: "Eight Sleep pager failed to process a primary page"
+            description: "A wake-up, alarm cleanup, or primary-eligibility check failed within the past 15 minutes. Check apps/eightsleep-pager logs. PagerDuty webhooks receive a retryable failure when the initial action fails."

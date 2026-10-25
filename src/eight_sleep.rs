@@ -2,6 +2,7 @@ use anyhow::{Context, bail};
 use chrono::{DateTime, Datelike, Duration, Timelike, Utc};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::time::{Duration as StdDuration, Instant};
 use tokio::sync::RwLock;
 
 const AUTH_URL: &str = "https://auth-api.8slp.net/v1/tokens";
@@ -17,14 +18,22 @@ struct TokenState {
     access_token: String,
     user_id: String,
     expires_at: DateTime<Utc>,
-    last_auth_attempt: Option<DateTime<Utc>>,
+}
+
+#[derive(Default)]
+struct AuthState {
+    token: Option<TokenState>,
+    retry_after: Option<Instant>,
 }
 
 pub struct EightSleepClient {
     http: Client,
     email: String,
     password: String,
-    token: RwLock<Option<TokenState>>,
+    token: RwLock<AuthState>,
+    auth_url: String,
+    client_api: String,
+    app_api: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -42,6 +51,7 @@ struct IntervalsResponse {
 
 #[derive(Debug, Deserialize)]
 pub struct SleepInterval {
+    pub ts: Option<DateTime<Utc>>,
     pub stages: Option<Vec<SleepStage>>,
     #[serde(default)]
     pub score: i32,
@@ -86,6 +96,7 @@ impl EightSleepClient {
     pub fn new(email: String, password: String) -> Self {
         let http = Client::builder()
             .user_agent("okhttp/4.9.3")
+            .timeout(StdDuration::from_secs(8))
             .build()
             .expect("failed to create HTTP client");
 
@@ -93,18 +104,30 @@ impl EightSleepClient {
             http,
             email,
             password,
-            token: RwLock::new(None),
+            token: RwLock::new(AuthState::default()),
+            auth_url: AUTH_URL.into(),
+            client_api: CLIENT_API.into(),
+            app_api: APP_API.into(),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_urls(base: &str) -> Self {
+        let mut client = Self::new("test@example.invalid".into(), "test-password".into());
+        client.auth_url = format!("{base}/tokens");
+        client.client_api = format!("{base}/client");
+        client.app_api = format!("{base}/app");
+        client
     }
 
     async fn ensure_token(&self) -> anyhow::Result<(String, String)> {
         // Fast path: read lock
         {
             let state = self.token.read().await;
-            if let Some(ref t) = *state {
-                if Utc::now() < t.expires_at - Duration::seconds(30) {
-                    return Ok((t.access_token.clone(), t.user_id.clone()));
-                }
+            if let Some(ref t) = state.token
+                && Utc::now() < t.expires_at - Duration::seconds(30)
+            {
+                return Ok((t.access_token.clone(), t.user_id.clone()));
             }
         }
 
@@ -112,25 +135,27 @@ impl EightSleepClient {
         let mut state = self.token.write().await;
 
         // Double-check after acquiring write lock
-        if let Some(ref t) = *state {
-            if Utc::now() < t.expires_at - Duration::seconds(30) {
-                return Ok((t.access_token.clone(), t.user_id.clone()));
-            }
+        if let Some(ref t) = state.token
+            && Utc::now() < t.expires_at - Duration::seconds(30)
+        {
+            return Ok((t.access_token.clone(), t.user_id.clone()));
         }
 
         // Rate-limit auth attempts
-        if let Some(ref t) = *state {
-            if let Some(last) = t.last_auth_attempt {
-                if Utc::now() - last < Duration::seconds(30) {
-                    bail!("auth rate-limited, last attempt was less than 30s ago");
-                }
-            }
+        if state
+            .retry_after
+            .is_some_and(|retry| Instant::now() < retry)
+        {
+            bail!("Eight Sleep authentication is backing off after a rejected login");
         }
 
+        // Record the attempt before sending: failed logins must be throttled too.
+        state.retry_after = Some(Instant::now() + StdDuration::from_secs(60));
         let new_state = self.authenticate().await?;
         let token = new_state.access_token.clone();
         let user_id = new_state.user_id.clone();
-        *state = Some(new_state);
+        state.token = Some(new_state);
+        state.retry_after = None;
         Ok((token, user_id))
     }
 
@@ -139,7 +164,7 @@ impl EightSleepClient {
 
         let resp = self
             .http
-            .post(AUTH_URL)
+            .post(&self.auth_url)
             .json(&serde_json::json!({
                 "client_id": CLIENT_ID,
                 "client_secret": CLIENT_SECRET,
@@ -153,8 +178,7 @@ impl EightSleepClient {
 
         let status = resp.status();
         if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            bail!("Eight Sleep auth failed ({}): {}", status, body);
+            bail!("Eight Sleep authentication failed ({status}); check saved credentials");
         }
 
         let auth: AuthResponse = resp.json().await.context("failed to parse auth response")?;
@@ -163,18 +187,110 @@ impl EightSleepClient {
             access_token: auth.access_token,
             user_id: auth.user_id,
             expires_at: now + Duration::seconds(auth.expires_in),
-            last_auth_attempt: Some(now),
         })
     }
 
+    async fn request(
+        &self,
+        method: reqwest::Method,
+        url: &str,
+        body: Option<serde_json::Value>,
+    ) -> anyhow::Result<reqwest::Response> {
+        for attempt in 0..2 {
+            let (token, _) = self.ensure_token().await?;
+            let mut request = self.http.request(method.clone(), url).bearer_auth(&token);
+            if let Some(ref body) = body {
+                request = request.json(body);
+            }
+            let response = request.send().await.context("Eight Sleep request failed")?;
+            if response.status() == reqwest::StatusCode::UNAUTHORIZED && attempt == 0 {
+                let mut state = self.token.write().await;
+                if state
+                    .token
+                    .as_ref()
+                    .is_some_and(|t| t.access_token == token)
+                {
+                    state.token = None;
+                }
+                continue;
+            }
+            return response
+                .error_for_status()
+                .context("Eight Sleep rejected request");
+        }
+        unreachable!()
+    }
+
+    /// Read the same dependencies used for waking without changing the bed.
+    pub async fn check_access(&self) -> anyhow::Result<()> {
+        let (_, user_id) = self.ensure_token().await?;
+        let account: serde_json::Value = self
+            .request(
+                reqwest::Method::GET,
+                &format!("{}/users/me", self.client_api),
+                None,
+            )
+            .await?
+            .json()
+            .await?;
+        let devices = account
+            .pointer("/user/devices")
+            .and_then(|v| v.as_array())
+            .context("Eight Sleep account has no devices")?;
+        if devices.is_empty() {
+            bail!("Eight Sleep account has no devices");
+        }
+        let device_id = devices[0]
+            .as_str()
+            .context("invalid Eight Sleep device ID")?;
+        let device: serde_json::Value = self
+            .request(
+                reqwest::Method::GET,
+                &format!("{}/devices/{device_id}", self.client_api),
+                None,
+            )
+            .await?
+            .json()
+            .await?;
+        if device.pointer("/result/online").and_then(|v| v.as_bool()) != Some(true) {
+            bail!("Eight Sleep bed is offline or its online state is unavailable");
+        }
+        let last_heard = device
+            .pointer("/result/lastHeard")
+            .and_then(|v| v.as_str())
+            .context("Eight Sleep bed has no last-contact timestamp")?;
+        let last_heard = DateTime::parse_from_rfc3339(last_heard)
+            .context("invalid Eight Sleep last-contact timestamp")?;
+        if Utc::now().signed_duration_since(last_heard).num_seconds() > 300 {
+            bail!("Eight Sleep bed has not contacted its cloud for over five minutes");
+        }
+        // Interval errors must not silently masquerade as a functioning wake integration.
+        self.current_sleep_depth().await?;
+        self.request(
+            reqwest::Method::GET,
+            &format!("{}/users/{user_id}/temperature", self.app_api),
+            None,
+        )
+        .await?;
+        // The read endpoint is v2, whereas creating/deleting one-off alarms is v1.
+        let alarms_url = format!(
+            "{}/users/{user_id}/alarms",
+            self.app_api.replacen("/v1", "/v2", 1)
+        );
+        self.request(reqwest::Method::GET, &alarms_url, None)
+            .await?;
+        Ok(())
+    }
+
     pub async fn current_sleep_depth(&self) -> anyhow::Result<SleepDepth> {
-        let (token, user_id) = self.ensure_token().await?;
+        let (_, user_id) = self.ensure_token().await?;
 
         let resp = self
-            .http
-            .get(format!("{CLIENT_API}/users/{user_id}/intervals"))
-            .bearer_auth(&token)
-            .send()
+            .request(
+                reqwest::Method::GET,
+                &format!("{}/users/{user_id}/intervals", self.client_api),
+                None,
+            )
             .await
             .context("failed to fetch sleep intervals")?;
 
@@ -184,14 +300,24 @@ impl EightSleepClient {
             bail!("failed to get intervals ({}): {}", status, body);
         }
 
-        let data: IntervalsResponse =
-            resp.json().await.context("failed to parse intervals")?;
+        let data: IntervalsResponse = resp.json().await.context("failed to parse intervals")?;
 
         let depth = data
             .intervals
-            .last()
+            .iter()
+            .max_by_key(|interval| interval.ts)
             .and_then(|interval| {
-                interval.stages.as_ref()?.last().map(|stage| match stage.stage.as_str() {
+                let stages = interval.stages.as_ref()?;
+                let seconds: u64 = stages.iter().map(|s| s.duration).sum();
+                let end = interval
+                    .ts?
+                    .checked_add_signed(Duration::seconds(i64::try_from(seconds).ok()?))?;
+                let age = (Utc::now() - end).num_seconds();
+                // Completed nights and delayed cloud data cannot establish that the user is awake.
+                if !(-60..=300).contains(&age) {
+                    return None;
+                }
+                stages.last().map(|stage| match stage.stage.as_str() {
                     "awake" => SleepDepth::Awake,
                     "light" => SleepDepth::Light,
                     "deep" => SleepDepth::Deep,
@@ -206,7 +332,7 @@ impl EightSleepClient {
     }
 
     pub async fn trigger_vibration(&self, power: u8, tz: &str) -> anyhow::Result<String> {
-        let (token, user_id) = self.ensure_token().await?;
+        let (_, user_id) = self.ensure_token().await?;
 
         // Create an alarm set to fire 1 minute from now in the user's local timezone.
         // The Eight Sleep API interprets alarm times as local time.
@@ -237,31 +363,31 @@ impl EightSleepClient {
         }
 
         let resp = self
-            .http
-            .post(format!("{APP_API}/users/{user_id}/alarms"))
-            .bearer_auth(&token)
-            .json(&serde_json::json!({
-                "enabled": true,
-                "time": time,
-                "repeat": {
-                    "enabled": false,
-                    "weekDays": week_days,
-                },
-                "vibration": {
+            .request(
+                reqwest::Method::POST,
+                &format!("{}/users/{user_id}/alarms", self.app_api),
+                Some(serde_json::json!({
                     "enabled": true,
-                    "powerLevel": power,
-                    "pattern": "RISE",
-                },
-                "thermal": { "enabled": false, "level": 0 },
-                "smart": {
-                    "lightSleepEnabled": false,
-                    "sleepCapEnabled": false,
-                    "sleepCapMinutes": 0,
-                },
-                "audio": { "enabled": false, "trackId": "", "level": 0 },
-                "snoozing": false,
-            }))
-            .send()
+                    "time": time,
+                    "repeat": {
+                        "enabled": false,
+                        "weekDays": week_days,
+                    },
+                    "vibration": {
+                        "enabled": true,
+                        "powerLevel": power,
+                        "pattern": "RISE",
+                    },
+                    "thermal": { "enabled": false, "level": 0 },
+                    "smart": {
+                        "lightSleepEnabled": false,
+                        "sleepCapEnabled": false,
+                        "sleepCapMinutes": 0,
+                    },
+                    "audio": { "enabled": false, "trackId": "", "level": 0 },
+                    "snoozing": false,
+                })),
+            )
             .await
             .context("failed to trigger vibration")?;
 
@@ -273,10 +399,11 @@ impl EightSleepClient {
 
         let body: serde_json::Value = resp.json().await.unwrap_or_default();
         let alarm_id = body
-            .pointer("/alarms/0/id")
+            .pointer("/alarm/id")
             .or_else(|| body.pointer("/id"))
             .and_then(|v| v.as_str())
-            .unwrap_or("unknown")
+            .filter(|id| !id.is_empty())
+            .context("Eight Sleep alarm response contained no created-alarm ID; refusing to use another alarm")?
             .to_string();
 
         tracing::info!(power, alarm_id, "eight sleep vibration alarm created");
@@ -284,13 +411,14 @@ impl EightSleepClient {
     }
 
     pub async fn delete_alarm(&self, alarm_id: &str) -> anyhow::Result<()> {
-        let (token, user_id) = self.ensure_token().await?;
+        let (_, user_id) = self.ensure_token().await?;
 
         let resp = self
-            .http
-            .delete(format!("{APP_API}/users/{user_id}/alarms/{alarm_id}"))
-            .bearer_auth(&token)
-            .send()
+            .request(
+                reqwest::Method::DELETE,
+                &format!("{}/users/{user_id}/alarms/{alarm_id}", self.app_api),
+                None,
+            )
             .await
             .context("failed to delete alarm")?;
 
@@ -305,16 +433,16 @@ impl EightSleepClient {
     }
 
     pub async fn set_temperature(&self, level: i8) -> anyhow::Result<()> {
-        let (token, user_id) = self.ensure_token().await?;
+        let (_, user_id) = self.ensure_token().await?;
 
         let resp = self
-            .http
-            .put(format!("{APP_API}/users/{user_id}/temperature"))
-            .bearer_auth(&token)
-            .json(&TemperatureRequest {
-                current_level: level,
-            })
-            .send()
+            .request(
+                reqwest::Method::PUT,
+                &format!("{}/users/{user_id}/temperature", self.app_api),
+                Some(serde_json::to_value(TemperatureRequest {
+                    current_level: level,
+                })?),
+            )
             .await
             .context("failed to set temperature")?;
 

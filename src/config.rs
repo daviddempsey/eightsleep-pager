@@ -10,6 +10,7 @@ pub struct Config {
     pub thermal_wake_level: i8,
     pub escalation_delay_secs: u64,
     pub timezone: String,
+    pub public_webhook_url: Option<String>,
 }
 
 impl Config {
@@ -45,8 +46,8 @@ impl Config {
                 .unwrap_or_else(|_| "30".to_string())
                 .parse()
                 .expect("ESCALATION_DELAY_SECS must be a valid u64"),
-            timezone: std::env::var("TIMEZONE")
-                .unwrap_or_else(|_| "America/New_York".to_string()),
+            timezone: std::env::var("TIMEZONE").unwrap_or_else(|_| "America/New_York".to_string()),
+            public_webhook_url: std::env::var("PUBLIC_WEBHOOK_URL").ok(),
         }
     }
 }

@@ -1,14 +1,17 @@
 use std::sync::Arc;
 
-use axum::routing::{get, post};
 use axum::Router;
+use axum::routing::{get, post};
 use tracing_subscriber::EnvFilter;
 
 mod config;
 mod eight_sleep;
 mod escalation;
 mod handlers;
+mod monitoring;
 mod pagerduty;
+#[cfg(test)]
+mod tests;
 
 use config::Config;
 use eight_sleep::EightSleepClient;
@@ -18,6 +21,7 @@ pub struct AppState {
     pub eight_sleep: EightSleepClient,
     pub pagerduty: PagerDutyClient,
     pub config: Config,
+    pub monitoring: monitoring::Monitoring,
 }
 
 #[tokio::main]
@@ -41,11 +45,16 @@ async fn main() {
             config.pagerduty_user_id.clone(),
         ),
         config,
+        monitoring: monitoring::Monitoring::default(),
     });
+
+    tokio::spawn(monitoring::run(Arc::clone(&state)));
 
     let app = Router::new()
         .route("/webhook", post(handlers::webhook))
         .route("/health", get(handlers::health))
+        .route("/live", get(|| async { axum::http::StatusCode::OK }))
+        .route("/metrics", get(handlers::metrics))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();

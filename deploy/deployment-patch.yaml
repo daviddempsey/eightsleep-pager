@@ -1,0 +1,34 @@
+# Apply with kubectl -n apps patch deployment eightsleep-pager
+# --type=strategic --patch-file=deploy/deployment-patch.yaml
+# Set the image separately to the published immutable image digest.
+spec:
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+  template:
+    spec:
+      containers:
+        - name: pager
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PUBLIC_WEBHOOK_URL
+              value: https://pagerduty.daviddempsey.dev/webhook
+          # Dependency failures belong in monitoring, not restart loops.
+          # Keep receiving pages so transient failures can be retried.
+          livenessProbe:
+            httpGet:
+              path: /live
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 20
+            timeoutSeconds: 3
+          readinessProbe:
+            httpGet:
+              path: /live
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
