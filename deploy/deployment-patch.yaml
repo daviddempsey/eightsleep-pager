@@ -2,6 +2,11 @@
 # --type=strategic --patch-file=deploy/deployment-patch.yaml
 # Set the image separately to the published immutable image digest.
 spec:
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
   template:
     spec:
       containers:
